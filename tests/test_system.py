@@ -1,7 +1,9 @@
 import io
+import json
 import zipfile
 from datetime import timedelta
-from pypdf import PdfWriter
+from pypdf import PdfReader, PdfWriter
+from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 from docx import Document as Word
 from sqlalchemy import select
 from app.config import settings
@@ -10,6 +12,7 @@ from app.models import Job, Task, Version, Change, now
 from app.repository import (
     claim_job,
     claim_tasks,
+    enqueue,
     record_document,
     record_failure,
     LostLease,
@@ -118,6 +121,62 @@ def test_download_file_and_text_api_and_export(authorized):
     with zipfile.ZipFile(io.BytesIO(payload)) as archive:
         assert "catalogue.json" in archive.namelist()
         assert any("/documents/rapport__" in name for name in archive.namelist())
+
+
+def test_export_disambiguates_text_for_pdfs_with_the_same_filename(authorized):
+    job = make_job(authorized)
+    owner = "export-test"
+    assert claim_job(owner, 180) == job["job_id"]
+    expected = {
+        "https://example.com/first/report.pdf": "Text from the first report",
+        "https://example.com/second/report.pdf": "Text from the second report",
+    }
+    with transaction() as db:
+        enqueue(db, db.get(Job, job["job_id"]), list(expected))
+    tasks = {task["url"]: task["id"] for task in claim_tasks(job["job_id"], owner, 10)}
+
+    for url, text in expected.items():
+        writer = PdfWriter()
+        page = writer.add_blank_page(200, 200)
+        name = NameObject
+        page[name("/Resources")] = DictionaryObject({
+            name("/Font"): DictionaryObject({
+                name("/F1"): DictionaryObject({
+                    name("/Type"): name("/Font"),
+                    name("/Subtype"): name("/Type1"),
+                    name("/BaseFont"): name("/Helvetica"),
+                }),
+            }),
+        })
+        stream = DecodedStreamObject()
+        stream.set_data(f"BT /F1 12 Tf 10 100 Td ({text}) Tj ET".encode("ascii"))
+        page[name("/Contents")] = stream
+        output = io.BytesIO()
+        writer.write(output)
+        body = output.getvalue()
+        stored = store_original(body, job["source_id"], url, "pdf", "report.pdf")
+        record_document(
+            job["job_id"], owner, tasks[url], url, "report.pdf", "pdf",
+            "application/pdf", body, stored, {}, [],
+        )
+        assert process_one()
+
+    response = authorized.get(f'/api/sources/{job["source_id"]}/export')
+    assert response.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        assert archive.testzip() is None
+        text_paths = [name for name in archive.namelist() if name.endswith(".txt")]
+        assert sorted(text_paths) == ["text/report-2.txt", "text/report.txt"]
+        assert {archive.read(path).decode("utf-8") for path in text_paths} == set(
+            expected.values()
+        )
+        catalogue = json.loads(archive.read("catalogue.json"))
+        assert {entry["url"] for entry in catalogue} == set(expected)
+        assert sorted(entry["txt_path"] for entry in catalogue) == sorted(text_paths)
+        for entry in catalogue:
+            pdf = PdfReader(io.BytesIO(archive.read(entry["pdf_path"])))
+            text = archive.read(entry["txt_path"]).decode("utf-8")
+            assert pdf.pages[0].extract_text() == text == expected[entry["url"]]
 
 
 def test_versions_and_change_feed_are_idempotent(authorized):

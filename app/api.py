@@ -409,7 +409,8 @@ def export(ident: str):
                 raise HTTPException(404, "Site introuvable.")
             manifest = []
             for doc in db.scalars(select(Document).where(Document.source_id == ident)):
-                manifest.append(document_json(db, doc))
+                entry = document_json(db, doc)
+                manifest.append(entry)
                 for version in db.scalars(
                     select(Version).where(Version.document_id == doc.id)
                 ):
@@ -419,6 +420,9 @@ def export(ident: str):
                     ):
                         z.write(resolve(version.blob_path), version.export_path)
                         included.add(version.export_path)
+                    if version.kind == "pdf" and version.id == doc.current_version:
+                        if version.export_path in included:
+                            entry["pdf_path"] = version.export_path
                     if (
                         version.text_path
                         and version.text_path not in included
@@ -426,6 +430,20 @@ def export(ident: str):
                     ):
                         z.write(resolve(version.text_path), version.text_path)
                         included.add(version.text_path)
+                    if version.kind == "pdf" and version.text_path:
+                        text_file = resolve(version.text_path)
+                        if text_file.is_file():
+                            stem = Path(version.export_path).stem.rsplit("__", 1)[0]
+                            plain_path = f"text/{stem}.txt"
+                            suffix = 2
+                            while plain_path in included:
+                                plain_path = f"text/{stem}-{suffix}.txt"
+                                suffix += 1
+                            payload = json.loads(text_file.read_text(encoding="utf-8"))
+                            z.writestr(plain_path, payload["text"])
+                            included.add(plain_path)
+                            if version.id == doc.current_version:
+                                entry["txt_path"] = plain_path
             z.writestr(
                 "catalogue.json",
                 json.dumps(manifest, ensure_ascii=False, indent=2, default=str),

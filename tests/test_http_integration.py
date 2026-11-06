@@ -102,7 +102,8 @@ def test_real_scrapy_http_download_database_and_extraction(
             env=environment,
             capture_output=True,
             text=True,
-            timeout=45,
+            # The browser crawl includes Chromium startup and multiple navigations.
+            timeout=120 if mode == "browser" else 45,
         )
         assert child.returncode == 0, child.stderr[-5000:]
         with transaction() as db:
