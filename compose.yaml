@@ -1,0 +1,62 @@
+x-app: &app
+  build:
+    context: .
+    args:
+      INSTALL_DOCLING: ${INSTALL_DOCLING:-false}
+  env_file: .env
+  environment:
+    DATABASE_URL: postgresql+psycopg://collector:${POSTGRES_PASSWORD}@db:5432/collector
+    STORAGE_DIR: /storage
+  volumes:
+    - documents:/storage
+  init: true
+  restart: unless-stopped
+  depends_on:
+    init-db:
+      condition: service_completed_successfully
+
+services:
+  db:
+    image: postgres:17-bookworm
+    environment:
+      POSTGRES_USER: collector
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Définir POSTGRES_PASSWORD dans .env}
+      POSTGRES_DB: collector
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U collector -d collector']
+      interval: 5s
+      retries: 20
+    restart: unless-stopped
+  init-db:
+    build:
+      context: .
+      args:
+        INSTALL_DOCLING: ${INSTALL_DOCLING:-false}
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://collector:${POSTGRES_PASSWORD}@db:5432/collector
+    command: [python, -m, app.init_db]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: 'no'
+  api:
+    <<: *app
+    ports: ['127.0.0.1:8000:8000']
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 15s
+      retries: 5
+  worker:
+    <<: *app
+    command: [python, -m, app.worker]
+    stop_grace_period: 120s
+  extractor:
+    <<: *app
+    command: [python, -m, app.extract]
+
+volumes:
+  postgres:
+  documents:

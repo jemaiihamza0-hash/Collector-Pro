@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="fr">
+ <head>
+  <meta charset="utf-8"/>
+  <meta content="width=device-width,initial-scale=1" name="viewport"/>
+  <title>
+   Collecteur documentaire
+  </title>
+  <link href="/static/style.css" rel="stylesheet"/>
+  <script defer="" src="/static/app.js">
+  </script>
+ </head>
+ <body>
+  <header>
+   <strong>
+    Collecteur documentaire
+   </strong>
+   <span>
+    Vos sources. Vos documents.
+   </span>
+   <button hidden="" id="logout">
+    Déconnexion
+   </button>
+  </header>
+  <main>
+   <section id="login">
+    <h1>
+     Ouvrir le collecteur
+    </h1>
+    <p>
+     Utilise la clé définie dans le fichier .env.
+    </p>
+    <form id="login-form">
+     <label>
+      Clé d’accès
+      <input autocomplete="current-password" id="key" required="" type="password"/>
+     </label>
+     <button>
+      Se connecter
+     </button>
+    </form>
+   </section>
+   <div hidden="" id="workspace">
+    <section>
+     <h1>
+      Ajouter un site
+     </h1>
+     <form id="source-form">
+      <label>
+       Lien du site
+       <input id="url" placeholder="https://www.cmf.tn/" required="" type="url"/>
+      </label>
+      <label class="check">
+       <input checked="" id="robots" type="checkbox"/>
+       Respecter robots.txt
+      </label>
+      <details>
+       <summary>
+        Options de collecte
+       </summary>
+       <div class="options">
+        <label>
+         Budget d’URL (0 = sans plafond)
+         <input id="budget" max="1000000" min="0" type="number" value="1000"/>
+        </label>
+        <label>
+         Chargement
+         <select id="mode">
+          <option value="auto">
+           Automatique
+          </option>
+          <option value="http">
+           HTTP uniquement
+          </option>
+          <option value="browser">
+           Navigateur
+          </option>
+         </select>
+        </label>
+        <label>
+         Autres hôtes autorisés
+         <input id="hosts" placeholder="documents.example.com, cdn.example.com"/>
+        </label>
+       </div>
+      </details>
+      <button>
+       Ajouter et démarrer
+      </button>
+      <p class="hint">
+       Tu peux ajouter d’autres sites pendant une collecte. Pause, reprise et téléchargement restent accessibles.
+      </p>
+     </form>
+    </section>
+    <section>
+     <div class="heading">
+      <h2>
+       Collectes
+      </h2>
+      <span class="hint" id="activity">
+       Actualisation toutes les 3 secondes
+      </span>
+     </div>
+     <div id="jobs">
+     </div>
+    </section>
+    <section>
+     <div class="heading">
+      <h2>
+       Documents et informations
+      </h2>
+      <a class="button" hidden="" id="export">
+       Télécharger tout le site
+      </a>
+     </div>
+     <div class="filters">
+      <label>
+       Site
+       <select id="source">
+        <option value="">
+         Tous les sites
+        </option>
+       </select>
+      </label>
+      <label>
+       Rechercher
+       <input id="search" placeholder="Titre ou URL"/>
+      </label>
+     </div>
+     <p class="hint" id="count">
+     </p>
+     <div id="documents">
+     </div>
+     <div class="heading">
+      <button id="previous">
+       Précédent
+      </button>
+      <button id="next">
+       Suivant
+      </button>
+     </div>
+    </section>
+   </div>
+   <div aria-live="polite" hidden="" id="message" role="status">
+   </div>
+   <dialog id="preview">
+    <div class="heading">
+     <h2>
+      Contenu extrait
+     </h2>
+     <button id="close-preview">
+      Fermer
+     </button>
+    </div>
+    <pre id="preview-text"></pre>
+   </dialog>
+  </main>
+  <footer>
+   Les fichiers sont archivés dans le volume storage. Les erreurs de téléchargement et d’extraction sont affichées séparément.
+  </footer>
+ </body>
+</html>

@@ -1,0 +1,11 @@
+fastapi==0.162.0
+uvicorn[standard]==0.54.0
+SQLAlchemy==2.0.57
+psycopg[binary]==3.3.8
+httpx==0.28.1
+Scrapy==2.19.0
+scrapy-playwright==0.0.48
+pypdf==6.10.0
+python-docx==1.2.0
+beautifulsoup4==4.15.0
+defusedxml==0.7.1
