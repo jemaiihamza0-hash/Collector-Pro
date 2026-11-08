@@ -1,7 +1,18 @@
 from datetime import timedelta
 from sqlalchemy import select, func, update
 from .db import transaction
-from .models import Job, Task, Document, Version, Clock, Change, now, uid
+from .models import (
+    Job,
+    Task,
+    Document,
+    Version,
+    Clock,
+    Change,
+    Schedule,
+    Source,
+    now,
+    uid,
+)
 from .storage import sha
 from .urls import normalize
 
@@ -244,3 +255,85 @@ def finish_job(job_id, owner, error=""):
             error
             or f"{good} ressources récupérées ; {counts.get('failed', 0)} échecs ; {counts.get('pending', 0)} restantes"
         )
+
+
+ACTIVE_JOBS = ("queued", "running", "pausing", "paused")
+
+
+def active_job(db, source_id, *, except_id=None):
+    query = select(Job.id).where(
+        Job.source_id == source_id, Job.status.in_(ACTIVE_JOBS)
+    )
+    if except_id is not None:
+        query = query.where(Job.id != except_id)
+    return db.scalar(query.limit(1))
+
+
+def create_job(db, source, max_urls, mode):
+    from .adapters import seeds
+
+    job = Job(
+        id=uid(),
+        source_id=source.id,
+        policy={
+            "hosts": source.hosts,
+            "respect_robots": source.respect_robots,
+            "max_urls": max_urls,
+            "mode": mode,
+            "limited": False,
+        },
+    )
+    db.add(job)
+    db.flush()
+    enqueue(db, job, seeds(source.url))
+    return job
+
+
+def configure_schedule(db, source_id, interval_minutes, max_urls, mode):
+    schedule = db.get(Schedule, source_id)
+    if not interval_minutes:
+        if schedule is not None:
+            db.delete(schedule)
+        return None
+    if schedule is None:
+        schedule = Schedule(source_id=source_id)
+        db.add(schedule)
+    schedule.interval_minutes = interval_minutes
+    schedule.next_run = now() + timedelta(minutes=interval_minutes)
+    schedule.max_urls = max_urls
+    schedule.mode = mode
+    return schedule
+
+
+def enqueue_due_source():
+    instant = now()
+    with transaction() as db:
+        source = db.scalar(
+            select(Source)
+            .join(Schedule)
+            .where(
+                Schedule.next_run <= instant,
+                ~select(Job.id)
+                .where(Job.source_id == Source.id, Job.status.in_(ACTIVE_JOBS))
+                .exists(),
+            )
+            .order_by(Schedule.next_run, Source.id)
+            .limit(1)
+            .with_for_update(of=Source, skip_locked=True)
+        )
+        if source is None or active_job(db, source.id):
+            return False
+        schedule = db.get(Schedule, source.id)
+        if schedule is None:
+            return False
+        # Compare within SQL so SQLite and PostgreSQL handle timestamps consistently.
+        due = db.scalar(
+            select(Schedule.source_id).where(
+                Schedule.source_id == source.id, Schedule.next_run <= instant
+            )
+        )
+        if not due:
+            return False
+        create_job(db, source, schedule.max_urls, schedule.mode)
+        schedule.next_run = instant + timedelta(minutes=schedule.interval_minutes)
+        return True
