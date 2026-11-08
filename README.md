@@ -13,7 +13,7 @@ python scripts/setup.py
 docker compose up --build -d
 ```
 
-Le premier script crée `.env` avec deux secrets aléatoires et refuse de remplacer un fichier existant. Ouvrir `.env`, copier uniquement la valeur `API_KEY`, puis ouvrir :
+Le premier script crée `.env` avec trois secrets aléatoires et refuse de remplacer un fichier existant. Ouvrir `.env`, copier uniquement la valeur `API_KEY`, puis ouvrir :
 
 http://localhost:8000
 
@@ -52,6 +52,53 @@ Ajouter une URL pendant une collecte ne l'interrompt pas : le nouveau site est m
 Les documents téléchargés restent disponibles si leur extraction échoue. Les statuts d'extraction `needs_ocr`, `failed`, `unsupported` ou `empty` restent visibles.
 
 Le budget compte les URL découvertes, y compris les index et les erreurs ; une fois atteint, de nouveaux liens ne sont pas conservés. Pour élargir la couverture après `limited`, créer une nouvelle collecte avec un budget supérieur ou 0. La reprise d'une tâche interrompue / en pause conserve sa file existante.
+
+## Collectes récurrentes et API BoursaMind
+
+À l’ajout d’un site, régler **Répéter toutes les** en minutes. La première
+collecte démarre immédiatement. Par exemple, 60 lance un nouveau tour chaque
+heure si le worker est disponible, et 1440 correspond à un intervalle de 24 h.
+La section **Fréquence par site** permet de modifier l’intervalle ou de l’arrêter
+avec 0. Une pause sur une collecte bloque aussi le lancement automatique du
+prochain tour pour ce site jusqu’à sa reprise. Si une échéance a été manquée,
+le worker lance un seul tour de rattrapage. Le calendrier et la file sont en base.
+
+Le crawler repasse sur les liens accessibles dans son budget et réutilise les
+validateurs HTTP quand ils sont disponibles. Une version dont le contenu est
+identique n’est pas ajoutée de nouveau. Les originaux et textes extraits
+restent dans le volume. PostgreSQL contient les métadonnées, versions et
+changements. Les chiffres métier demandent un parseur propre à leur format.
+
+Sur un déploiement existant, conserver les volumes et le fichier `.env`.
+Générer une nouvelle valeur aléatoire pour `READER_API_KEY`, puis initialiser la
+table de planification et recréer les services avec la configuration mise à jour :
+
+```bash
+docker compose build
+docker compose run --rm init-db
+docker compose up -d
+```
+
+Pour un domaine de production, pointer le DNS vers le VPS et terminer HTTPS
+au niveau du reverse proxy. Celui-ci doit transmettre les requêtes à l’API
+locale sur `127.0.0.1:8000` (ou au port hôte choisi). Garder PostgreSQL hors
+exposition publique. Dans `.env`, définir `PUBLIC_ORIGIN=https://collecte.example.com`
+avec le vrai domaine, et `COOKIE_SECURE=true`. Configurer le reverse proxy pour
+limiter les tentatives sur `/api/login`.
+
+Conserver `API_KEY` pour l’administration. Donner seulement `READER_API_KEY`
+au **backend** BoursaMind et transmettre la clé dans `X-API-Key` sur HTTPS.
+Cette clé permet la lecture de `/api/documents` et des routes document (métadonnées,
+versions, original et texte), ainsi que du flux `/api/changes`. Elle ne donne
+aucun accès à l’administration, aux collectes, à la modification des fréquences
+ou aux exports par site. Pour la remplacer, générer une nouvelle valeur,
+recréer le service API et mettre à jour le secret du backend client.
+
+Le backend BoursaMind peut consommer les événements `document.extracted`
+et avancer son curseur seulement après traitement réussi. Pour alimenter
+TUNINDEX, utiliser les bulletins BVMT autorisés et le parseur de clôture
+BoursaMind. Configurer les droits des sources avant d’activer leur collecte
+récurrente en production.
 
 ## Architecture
 
@@ -96,7 +143,7 @@ flowchart TB
 | `tests/` | Tests unitaires, API et collecte HTTP réelle sur fixture |
 | `.github/workflows/tests.yml` | CI prévue avec PostgreSQL et Chromium |
 
-`CODE_COMPLET.md` regroupe le code de chaque fichier. Les fichiers réels du ZIP font autorité et sont directement exécutables.
+`CODE_COMPLET.md` est un instantané de la première version. Les fichiers du dépôt font autorité pour le code actuel.
 
 ## Données et téléchargements
 
@@ -223,7 +270,7 @@ Le test HTTP lance un vrai serveur local de fixture et un vrai processus Scrapy.
 
 Le test navigateur est inclus et s'exécute si Chromium est installé ; sinon il est explicitement ignoré. La CI fournie configure PostgreSQL et Chromium mais n'a pas été lancée depuis cette livraison.
 
-Résultat dans l'environnement de création : 19 tests réussis, 1 test navigateur ignoré. Syntaxe JavaScript et code Python vérifiés. Base de test SQLite. Docker et PostgreSQL n'étant pas disponibles, aucun démarrage Docker ni test transactionnel réel PostgreSQL n'est revendiqué. Le téléchargement de Chromium a échoué dans cet environnement. Aucune collecte réelle complète CMF n'est certifiée.
+Résultat dans l'environnement de création : 21 tests réussis, 1 test navigateur ignoré. Syntaxe JavaScript et code Python vérifiés. Base de test SQLite. Docker et PostgreSQL n'étant pas disponibles, aucun démarrage Docker ni test transactionnel réel PostgreSQL n'est revendiqué. Le téléchargement de Chromium a échoué dans cet environnement. Aucune collecte réelle complète CMF n'est certifiée.
 
 Le schéma est initialisé pour ce nouveau projet. Les futures évolutions de schéma nécessiteront une migration versionnée avant mise à jour d'une base existante. Les dépendances directes principales sont épinglées aux versions installées ; Docling est optionnel et non épinglé à une version testée.
 
