@@ -385,3 +385,69 @@ def test_postgresql_schema_and_locking_sql_compile():
         .compile(dialect=postgresql.dialect())
     )
     assert "FOR UPDATE SKIP LOCKED" in sql
+
+
+def test_periodic_schedule_and_read_key(authorized, monkeypatch):
+    from dataclasses import replace
+    from datetime import timedelta
+
+    from app import api
+    from app.db import transaction
+    from app.models import Job, Schedule, now
+    from app.repository import enqueue_due_source
+    from sqlalchemy import select
+
+    response = authorized.post(
+        "/api/sources",
+        json={
+            "url": "https://example.com/",
+            "interval_minutes": 60,
+            "respect_robots": False,
+            "mode": "http",
+            "max_urls": 25,
+        },
+    )
+    assert response.status_code == 201
+    ids = response.json()
+    source_id = ids["source_id"]
+
+    with transaction() as db:
+        db.get(Schedule, source_id).next_run = now() - timedelta(days=3)
+    assert not enqueue_due_source()
+    with transaction() as db:
+        db.get(Job, ids["job_id"]).status = "paused"
+    assert not enqueue_due_source()
+    with transaction() as db:
+        db.get(Job, ids["job_id"]).status = "completed"
+    assert enqueue_due_source()
+    assert not enqueue_due_source()
+    with transaction() as db:
+        new_job = db.scalar(select(Job).where(Job.id != ids["job_id"]))
+        assert new_job.policy["max_urls"] == 25
+        assert new_job.policy["mode"] == "http"
+        assert new_job.policy["respect_robots"] is False
+        assert db.scalar(select(Schedule.source_id).where(Schedule.next_run > now()))
+
+    url = f"/api/sources/{source_id}/schedule"
+    assert (
+        authorized.patch(url, json={"interval_minutes": 120}).json()["interval_minutes"]
+        == 120
+    )
+    assert (
+        authorized.patch(url, json={"interval_minutes": 0}).json()["next_run"] is None
+    )
+    assert not enqueue_due_source()
+
+    reader_key = "test-reader-key-only-abcdefghijklmnopqrstuvwxyz"
+    monkeypatch.setattr(
+        api, "settings", replace(api.settings, reader_api_key=reader_key)
+    )
+    reader = {"X-API-Key": reader_key}
+    assert authorized.get("/api/documents", headers=reader).status_code == 200
+    assert authorized.get("/api/changes", headers=reader).status_code == 200
+    assert authorized.get("/api/jobs", headers=reader).status_code == 401
+    assert (
+        authorized.patch(url, headers=reader, json={"interval_minutes": 1}).status_code
+        == 401
+    )
+    assert authorized.post("/api/login", json={"key": reader_key}).status_code == 401
