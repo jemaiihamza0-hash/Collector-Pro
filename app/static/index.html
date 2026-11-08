@@ -54,6 +54,10 @@
        <input checked="" id="robots" type="checkbox"/>
        Respecter robots.txt
       </label>
+      <label>
+       Répéter toutes les (minutes, 0 = une seule collecte)
+       <input id="interval" min="0" max="525600" value="0" required type="number"/>
+      </label>
       <details>
        <summary>
         Options de collecte
@@ -90,6 +94,10 @@
        Tu peux ajouter d’autres sites pendant une collecte. Pause, reprise et téléchargement restent accessibles.
       </p>
      </form>
+    </section>
+    <section>
+     <h2>Fréquence par site</h2>
+     <div id="schedules"></div>
     </section>
     <section>
      <div class="heading">
