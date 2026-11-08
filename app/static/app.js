@@ -88,6 +88,7 @@ $('source-form').onsubmit = async event => {
                 respect_robots: $('robots').checked,
                 max_urls: Number($('budget').value),
                 mode: $('mode').value,
+                interval_minutes: Number($('interval').value),
                 extra_hosts: $('hosts').value.split(',').map(x => x.trim()).filter(Boolean)
             })
         });
@@ -106,7 +107,36 @@ async function loadSources() {
     const selected = $('source').value;
     $('source').replaceChildren(node('option', 'Tous les sites'));
     $('source').firstChild.value = '';
+    const schedules = $('schedules');
+    schedules.replaceChildren();
     for (const source of items) {
+        const form = node('form', undefined, 'job');
+        const label = node('label', source.url + ' — minutes (0 = désactiver)');
+        const interval = node('input');
+        interval.type = 'number';
+        interval.min = '0';
+        interval.max = '525600';
+        interval.required = true;
+        interval.value = source.interval_minutes;
+        label.append(interval);
+        const save = node('button', 'Enregistrer');
+        form.append(label, save);
+        form.onsubmit = async event => {
+            event.preventDefault();
+            save.disabled = true;
+            try {
+                await api(`/api/sources/${source.id}/schedule`, {
+                    method: 'PATCH',
+                    body: JSON.stringify({interval_minutes: Number(interval.value)})
+                });
+                notify('Fréquence enregistrée.');
+            } catch (e) {
+                notify(e.message);
+            } finally {
+                save.disabled = false;
+            }
+        };
+        schedules.append(form);
         const option = node('option', source.name);
         option.value = source.id;
         $('source').append(option);
