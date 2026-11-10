@@ -4,10 +4,11 @@ import subprocess
 import sys
 import time
 from uuid import uuid4
+from sqlalchemy import select
 from .config import settings
 from .db import transaction
 from .models import Job, now
-from .repository import claim_job, finish_job, LostLease
+from .repository import claim_job, enqueue_due_source, finish_job, LostLease
 
 log = logging.getLogger(__name__)
 
@@ -23,25 +24,36 @@ def main():
     signal.signal(signal.SIGTERM, stopping)
     signal.signal(signal.SIGINT, stopping)
     while not stop:
+        enqueue_due_source()
         owner = str(uuid4())
         job_id = claim_job(owner, settings.lease_seconds)
         if not job_id:
             time.sleep(1)
             continue
         child = subprocess.Popen([sys.executable, "-m", "app.crawl", job_id, owner])
+        paused_for_shutdown = False
         while child.poll() is None:
             try:
                 with transaction() as db:
-                    job = db.get(Job, job_id)
+                    job = db.scalar(
+                        select(Job).where(Job.id == job_id).with_for_update()
+                    )
                     if not job or job.owner != owner:
                         child.terminate()
                         break
                     job.heartbeat = now()
-                    if stop:
+                    if stop and job.status == "running":
                         job.status = "pausing"
+                        paused_for_shutdown = True
             except Exception:
                 log.exception("Échec du heartbeat ; le lease permettra la reprise.")
             time.sleep(2)
+        if paused_for_shutdown:
+            with transaction() as db:
+                job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
+                if job and job.status == "paused" and job.owner is None:
+                    job.status = "queued"
+                    job.message = "Reprise au prochain démarrage du worker."
         # Un processus qui s'arrête sans finaliser ne doit pas laisser un job running.
         with transaction() as db:
             job = db.get(Job, job_id)

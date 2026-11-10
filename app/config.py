@@ -12,6 +12,10 @@ class Settings:
         default_factory=lambda: Path(os.getenv("STORAGE_DIR", "./storage")).resolve()
     )
     api_key: str = field(default_factory=lambda: os.getenv("API_KEY", ""))
+    public_origin: str = field(
+        default_factory=lambda: os.getenv("PUBLIC_ORIGIN", "").rstrip("/")
+    )
+    reader_api_key: str = field(default_factory=lambda: os.getenv("READER_API_KEY", ""))
     max_bytes: int = field(
         default_factory=lambda: int(os.getenv("MAX_FILE_BYTES", str(50 * 1024 * 1024)))
     )

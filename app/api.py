@@ -16,17 +16,22 @@ from sqlalchemy.exc import IntegrityError
 from starlette.background import BackgroundTask
 from .config import settings
 from .db import transaction
-from .models import Source, Job, Task, Document, Version, Change, now, uid
-from .repository import enqueue
+from .models import Source, Job, Task, Document, Version, Change, Schedule, now, uid
+from .repository import active_job, create_job, configure_schedule
 from .urls import normalize, allowed_hosts, public_address
 from .storage import sha, resolve, safe_name
-from .adapters import seeds
 
 
 @asynccontextmanager
 async def lifespan(app):
     if len(settings.api_key) < 24:
         raise RuntimeError("Configurer une API_KEY aléatoire de 24 caractères minimum.")
+    if settings.reader_api_key and (
+        len(settings.reader_api_key) < 24 or settings.reader_api_key == settings.api_key
+    ):
+        raise RuntimeError(
+            "READER_API_KEY doit être distincte et faire au moins 24 caractères."
+        )
     yield
 
 
@@ -47,7 +52,9 @@ async def conflict(request, exc):
 async def same_origin(request, call_next):
     origin = request.headers.get("origin")
     if request.method not in ("GET", "HEAD", "OPTIONS") and origin:
-        if origin.rstrip("/") != str(request.base_url).rstrip("/"):
+        if origin.rstrip("/") != (
+            settings.public_origin or str(request.base_url).rstrip("/")
+        ):
             return JSONResponse({"detail": "Origine non autorisée"}, status_code=403)
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
@@ -63,6 +70,15 @@ def authenticate(request: Request):
     )
     if not key or not secrets.compare_digest(key.encode(), settings.api_key.encode()):
         raise HTTPException(401, "Clé API invalide.")
+
+
+def authenticate_reader(request: Request):
+    key = request.headers.get("X-API-Key", "")
+    if settings.reader_api_key and secrets.compare_digest(
+        key.encode(), settings.reader_api_key.encode()
+    ):
+        return
+    authenticate(request)
 
 
 class Login(BaseModel):
@@ -96,30 +112,7 @@ class CreateSource(BaseModel):
     extra_hosts: list[str] = Field(default_factory=list, max_length=20)
     max_urls: int = Field(default=1000, ge=0, le=1000000)
     mode: str = "auto"
-
-
-def create_job(db, source, body):
-    if db.scalar(
-        select(Job).where(
-            Job.source_id == source.id, Job.status.in_(["queued", "running", "pausing"])
-        )
-    ):
-        raise HTTPException(409, "Ce site est déjà en cours ou en attente.")
-    job = Job(
-        id=uid(),
-        source_id=source.id,
-        policy={
-            "hosts": source.hosts,
-            "respect_robots": body.respect_robots,
-            "max_urls": body.max_urls,
-            "mode": body.mode,
-            "limited": False,
-        },
-    )
-    db.add(job)
-    db.flush()
-    enqueue(db, job, seeds(source.url))
-    return job
+    interval_minutes: int | None = Field(default=None, ge=0, le=525600)
 
 
 @app.post("/api/sources", dependencies=[Depends(authenticate)], status_code=201)
@@ -151,7 +144,20 @@ def add_source(body: CreateSource):
             db.flush()
         source.hosts = hosts
         source.respect_robots = body.respect_robots
-        job = create_job(db, source, body)
+        if active_job(db, source.id):
+            raise HTTPException(409, "Ce site a déjà une collecte active ou en pause.")
+        job = create_job(db, source, body.max_urls, body.mode)
+        schedule = db.get(Schedule, source.id)
+        if body.interval_minutes is not None or schedule:
+            configure_schedule(
+                db,
+                source.id,
+                body.interval_minutes
+                if body.interval_minutes is not None
+                else schedule.interval_minutes,
+                body.max_urls,
+                body.mode,
+            )
         return {"source_id": source.id, "job_id": job.id}
 
 
@@ -164,9 +170,44 @@ def sources():
                 "url": s.url,
                 "name": s.name,
                 "respect_robots": s.respect_robots,
+                "interval_minutes": schedule.interval_minutes if schedule else 0,
+                "next_run": schedule.next_run if schedule else None,
             }
-            for s in db.scalars(select(Source).order_by(Source.created_at.desc()))
+            for s, schedule in db.execute(
+                select(Source, Schedule)
+                .outerjoin(Schedule)
+                .order_by(Source.created_at.desc())
+            )
         ]
+
+
+class ScheduleUpdate(BaseModel):
+    interval_minutes: int = Field(ge=0, le=525600)
+
+
+@app.patch("/api/sources/{ident}/schedule", dependencies=[Depends(authenticate)])
+def update_schedule(ident: str, body: ScheduleUpdate):
+    with transaction() as db:
+        source = db.scalar(select(Source).where(Source.id == ident).with_for_update())
+        if not source:
+            raise HTTPException(404, "Site introuvable.")
+        latest = db.scalar(
+            select(Job)
+            .where(Job.source_id == ident)
+            .order_by(Job.created_at.desc(), Job.id.desc())
+            .limit(1)
+        )
+        schedule = configure_schedule(
+            db,
+            ident,
+            body.interval_minutes,
+            latest.policy["max_urls"] if latest else 1000,
+            latest.policy["mode"] if latest else "auto",
+        )
+        return {
+            "interval_minutes": body.interval_minutes,
+            "next_run": schedule.next_run if schedule else None,
+        }
 
 
 @app.get("/api/jobs", dependencies=[Depends(authenticate)])
@@ -209,6 +250,9 @@ def jobs():
 @app.post("/api/jobs/{ident}/{action}", dependencies=[Depends(authenticate)])
 def control(ident: str, action: str):
     with transaction() as db:
+        source_id = db.scalar(select(Job.source_id).where(Job.id == ident))
+        if source_id is not None:
+            db.scalar(select(Source).where(Source.id == source_id).with_for_update())
         job = db.scalar(select(Job).where(Job.id == ident).with_for_update())
         if not job:
             raise HTTPException(404, "Collecte introuvable.")
@@ -219,6 +263,8 @@ def control(ident: str, action: str):
             "partial",
             "failed",
         ):
+            if active_job(db, job.source_id, except_id=job.id):
+                raise HTTPException(409, "Une autre collecte est active pour ce site.")
             if action == "retry":
                 db.execute(
                     update(Task)
@@ -275,7 +321,7 @@ def document_json(db, doc):
     }
 
 
-@app.get("/api/documents", dependencies=[Depends(authenticate)])
+@app.get("/api/documents", dependencies=[Depends(authenticate_reader)])
 def documents(
     source_id: str | None = None,
     q: str = "",
@@ -304,7 +350,7 @@ def documents(
         }
 
 
-@app.get("/api/documents/{ident}", dependencies=[Depends(authenticate)])
+@app.get("/api/documents/{ident}", dependencies=[Depends(authenticate_reader)])
 def document(ident: str):
     with transaction() as db:
         doc = db.get(Document, ident)
@@ -313,7 +359,7 @@ def document(ident: str):
         return document_json(db, doc)
 
 
-@app.get("/api/documents/{ident}/file", dependencies=[Depends(authenticate)])
+@app.get("/api/documents/{ident}/file", dependencies=[Depends(authenticate_reader)])
 def file(ident: str, version_id: str | None = None):
     with transaction() as db:
         doc = db.get(Document, ident)
@@ -330,7 +376,7 @@ def file(ident: str, version_id: str | None = None):
         )
 
 
-@app.get("/api/documents/{ident}/versions", dependencies=[Depends(authenticate)])
+@app.get("/api/documents/{ident}/versions", dependencies=[Depends(authenticate_reader)])
 def versions(ident: str):
     with transaction() as db:
         return [
@@ -349,7 +395,7 @@ def versions(ident: str):
         ]
 
 
-@app.get("/api/documents/{ident}/text", dependencies=[Depends(authenticate)])
+@app.get("/api/documents/{ident}/text", dependencies=[Depends(authenticate_reader)])
 def text(ident: str, version_id: str | None = None):
     with transaction() as db:
         doc = db.get(Document, ident)
@@ -373,7 +419,7 @@ def text(ident: str, version_id: str | None = None):
         }
 
 
-@app.get("/api/changes", dependencies=[Depends(authenticate)])
+@app.get("/api/changes", dependencies=[Depends(authenticate_reader)])
 def changes(cursor: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=1000)):
     with transaction() as db:
         rows = db.scalars(

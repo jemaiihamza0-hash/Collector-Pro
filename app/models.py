@@ -37,6 +37,15 @@ class Source(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class Schedule(Base):
+    __tablename__ = "source_schedules"
+    source_id: Mapped[str] = mapped_column(ForeignKey("sources.id"), primary_key=True)
+    interval_minutes: Mapped[int] = mapped_column(Integer)
+    next_run: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    max_urls: Mapped[int] = mapped_column(Integer)
+    mode: Mapped[str] = mapped_column(String(16))
+
+
 class Job(Base):
     __tablename__ = "jobs"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
