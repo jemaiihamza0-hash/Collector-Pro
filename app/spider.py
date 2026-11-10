@@ -26,6 +26,14 @@ from sqlalchemy import select, func
 
 log = logging.getLogger(__name__)
 
+# Every status is handed back to fetch_task except the redirects, which must
+# reach RedirectMiddleware. "handle_httpstatus_all" also disabled redirects:
+# any http->https, www or download-link redirect then failed as an empty
+# response. A followed redirect is a new request, so ScopeMiddleware rechecks
+# host, public address and robots for every hop before it is fetched.
+REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+HANDLED_STATUSES = [status for status in range(100, 600) if status not in REDIRECT_STATUSES]
+
 
 class ScopeMiddleware:
     def __init__(self, crawler):
@@ -94,7 +102,7 @@ class CollectorSpider(scrapy.Spider):
 
     async def download(self, url, browser=False, referer="", headers=None):
         meta = {
-            "handle_httpstatus_all": True,
+            "handle_httpstatus_list": HANDLED_STATUSES,
             "download_maxsize": settings.max_bytes,
             "playwright": browser,
         }
@@ -313,6 +321,8 @@ def scrapy_settings():
             "scrapy.downloadermiddlewares.robotstxt.RobotsTxtMiddleware": None,
         },
         "ROBOTSTXT_OBEY": False,  # Politique commune HTTP + navigateur dans ScopeMiddleware / abort_browser.
+        "REDIRECT_ENABLED": True,
+        "REDIRECT_MAX_TIMES": 5,
         "USER_AGENT": settings.user_agent,
         "DOWNLOAD_TIMEOUT": 60,
         "DOWNLOAD_MAXSIZE": settings.max_bytes,
