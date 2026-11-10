@@ -1,12 +1,16 @@
 from urllib.parse import urljoin, urlsplit
 from bs4 import BeautifulSoup
 from defusedxml import ElementTree
+from .bvmt import bulletin_links, bvmt_seeds, is_bvmt
 from .cmf import cmf_seeds, year_filter_links
 
 
 def seeds(url):
     p = urlsplit(url)
     origin = f"{p.scheme}://{p.netloc}"
+    if is_bvmt(url):
+        # Collecte ciblée : la page des éditions et les bulletins qu'elle publie.
+        return list(dict.fromkeys([url, *bvmt_seeds(origin)]))
     result = [
         url,
         origin + "/sitemap.xml",
@@ -31,6 +35,8 @@ def html_links(body, url):
     ]
     if urlsplit(url).hostname.removeprefix("www.") == "cmf.tn":
         links.extend(year_filter_links(soup, url))
+    if is_bvmt(url):
+        links = bulletin_links(links)
     title = soup.title.get_text(" ", strip=True) if soup.title else url
     # Le plan CMF fournit les rubriques ; leurs liens de pagination sont suivis.
     return title, list(dict.fromkeys(links))
